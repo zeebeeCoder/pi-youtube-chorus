@@ -213,6 +213,7 @@ async function moveRawArtifactsToRawDir(captureDir: string, manifest: Record<str
 
   const modelFacingKeys = new Set([
     "metadata",
+    "transcript_normalized",
     "transcript_segments_jsonl",
     "comments_scored_jsonl",
     "comments_clusters_json",
@@ -232,7 +233,17 @@ async function moveRawArtifactsToRawDir(captureDir: string, manifest: Record<str
     moved[key] = nextPath;
   }
 
+  const derived = manifest.derived && typeof manifest.derived === "object"
+    ? {
+        ...manifest.derived,
+        files: Object.fromEntries(
+          Object.keys(manifest.derived.files ?? {}).map((key) => [key, files[key] ?? manifest.derived.files[key]])
+        ),
+      }
+    : manifest.derived;
+
   manifest.files = files;
+  manifest.derived = derived;
   manifest.artifact_layout = "canonical";
   manifest.raw_dir = rawDir;
   await writeFile(join(captureDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
@@ -405,7 +416,7 @@ export default function (pi: ExtensionAPI) {
         details: { outputDir: invocation.outputDir },
       });
 
-      const result = await pi.exec(invocation.command, invocation.args, { signal, timeout: 10 * 60_000 });
+      const result = await pi.exec(invocation.command, invocation.args, { signal, timeout: 10 * 60_000, cwd: ctx.cwd });
       if (result.code !== 0) {
         throw new Error(
           `yt-capture failed. Ensure yt-capture is on PATH or set YT_MCP_DIR. ${result.stderr || result.stdout}`

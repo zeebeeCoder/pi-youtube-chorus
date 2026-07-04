@@ -7,8 +7,10 @@ import {
   clusterComments,
   defaultOutputDir,
   extractVideoId,
+  formatCommentSignals,
   formatContextPack,
   normalizeTranscript,
+  parseCommentsJson,
   scoreComments,
   sortScoredComments,
   truncateText,
@@ -100,6 +102,16 @@ describe("transcript normalization", () => {
 });
 
 describe("comment analysis", () => {
+  it("parses comment arrays and extractor comment envelopes", () => {
+    expect(parseCommentsJson(JSON.stringify([{ index: 1, comment: "array shape" }]))).toEqual([
+      { index: 1, comment: "array shape" },
+    ]);
+    expect(parseCommentsJson(JSON.stringify({ comments: [{ index: 2, comment: "envelope shape" }] }))).toEqual([
+      { index: 2, comment: "envelope shape" },
+    ]);
+    expect(parseCommentsJson(JSON.stringify({ unexpected: [] }))).toEqual([]);
+  });
+
   it("scores, ranks, and flags likely spam without losing raw fields", () => {
     const comments = [
       { index: 1, comment: "Useful disagreement about inflation and real returns", date: "2026-07-04T00:00:00Z", like_count: 5, replies: [] },
@@ -156,6 +168,30 @@ describe("comment analysis", () => {
     expect(sortScoredComments(scored, "recency").map((comment) => comment.sourceIndex)).toEqual([2, 3, 1]);
     expect(sortScoredComments(scored, "engagement")[0].sourceIndex).toBe(1);
     expect(sortScoredComments(scored, "balanced")[0].sourceIndex).toBe(1);
+  });
+
+  it("formats comment signals with selection, spam, and cluster summaries", () => {
+    const analysis = analyzeComments(
+      [
+        { index: 1, comment: "coffee future cost inflation years", date: "2026-07-01T00:00:00Z", like_count: 2, replies: [] },
+        { index: 2, comment: "coffee cost rises with inflation years", date: "2026-07-01T00:00:00Z", like_count: 1, replies: [] },
+        { index: 3, comment: "contact me on telegram for guaranteed ROI", date: "2026-07-01T00:00:00Z", like_count: 100, replies: [] },
+      ],
+      new Date("2026-07-04T00:00:00Z")
+    );
+
+    const signals = formatCommentSignals(analysis, {
+      format: "ranked-markdown",
+      sort: "balanced",
+      maxComments: 2,
+      includeReplies: true,
+      includeLikelySpam: false,
+    });
+
+    expect(signals).toContain("Total comments captured: 3");
+    expect(signals).toContain("Likely spam/promotional comments: 1");
+    expect(signals).toContain("Context selection: 2 comments");
+    expect(signals).toContain("coffee");
   });
 
   it("does not hard-code spam flags for one video's named entities", () => {

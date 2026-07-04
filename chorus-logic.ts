@@ -315,7 +315,13 @@ export function truncateText(text: string, maxChars: number, label: string): Tru
   }
 
   const notice = `\n\n[${label} truncated: showing ${maxChars} of ${text.length} characters. Use artifact paths or a smaller chunk request for full data.]`;
-  const emitted = (text.slice(0, Math.max(0, maxChars - notice.length)) + notice).slice(0, maxChars);
+  const contentBudget = maxChars - notice.length;
+  const shortNotice = `[${label} truncated: ${maxChars}/${text.length} chars]`;
+  const emitted = contentBudget >= 20
+    ? text.slice(0, contentBudget) + notice
+    : shortNotice.length <= maxChars
+      ? shortNotice
+      : text.slice(0, maxChars);
 
   return {
     text: emitted,
@@ -653,6 +659,17 @@ export function formatContextPack(input: ContextPackInput): { text: string; deta
     ? ["## Comment signals", "", input.commentSignals, ""]
     : [];
 
+  const transcriptText = transcript
+    ? input.transcriptMaxChars <= 0
+      ? `[Transcript omitted: zero character budget. Full data: ${input.transcriptPath ?? "not available"}.]`
+      : transcript.text
+    : "Transcript not available or not requested.";
+  const commentsText = comments
+    ? input.commentsMaxChars <= 0
+      ? `[Comments omitted: zero character budget. Full data: ${input.commentsPath ?? "not available"}.]`
+      : comments.text
+    : "Comments not available or not requested.";
+
   const lines = [
     "# YouTube Chorus Context Pack",
     "",
@@ -671,13 +688,13 @@ export function formatContextPack(input: ContextPackInput): { text: string; deta
     "",
     input.transcriptPath ? `Source: ${input.transcriptPath}` : "Source: not available",
     "",
-    transcript?.text ?? "Transcript not available or not requested.",
+    transcriptText,
     "",
     "## Comments",
     "",
     input.commentsPath ? `Source: ${input.commentsPath}` : "Source: not available",
     "",
-    comments?.text ?? "Comments not available or not requested.",
+    commentsText,
   ];
 
   return {

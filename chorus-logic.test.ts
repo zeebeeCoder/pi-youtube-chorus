@@ -151,10 +151,15 @@ describe("comment analysis", () => {
 
 describe("context formatting", () => {
   it("truncates long sections without exceeding the requested budget", () => {
-    const truncated = truncateText("abcdef", 4, "Transcript");
-    expect(truncated.truncated).toBe(true);
-    expect(truncated.text.length).toBeLessThanOrEqual(4);
-    expect(truncated.emittedChars).toBe(4);
+    const tiny = truncateText("abcdef", 4, "Transcript");
+    expect(tiny.truncated).toBe(true);
+    expect(tiny.text).toBe("abcd");
+    expect(tiny.emittedChars).toBe(4);
+
+    const compact = truncateText("a".repeat(100), 40, "Transcript");
+    expect(compact.truncated).toBe(true);
+    expect(compact.text).toContain("Transcript truncated");
+    expect(compact.text.length).toBeLessThanOrEqual(40);
   });
 
   it("treats zero character budget as no emitted text", () => {
@@ -184,5 +189,21 @@ describe("context formatting", () => {
     expect(pack.text).toContain("speaker text");
     expect(pack.text).toContain("comment text");
     expect(pack.details.transcriptTruncated).toBe(false);
+  });
+
+  it("renders explicit omission notices for zero context budgets", () => {
+    const pack = formatContextPack({
+      title: "Demo",
+      captureDir: "/tmp/capture",
+      transcript: "speaker text",
+      comments: "comment text",
+      transcriptPath: "/tmp/capture/transcript.segments.jsonl",
+      commentsPath: "/tmp/capture/comments.scored.jsonl",
+      transcriptMaxChars: 0,
+      commentsMaxChars: 0,
+    });
+
+    expect(pack.text).toContain("[Transcript omitted: zero character budget. Full data: /tmp/capture/transcript.segments.jsonl.]");
+    expect(pack.text).toContain("[Comments omitted: zero character budget. Full data: /tmp/capture/comments.scored.jsonl.]");
   });
 });

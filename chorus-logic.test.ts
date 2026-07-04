@@ -4,6 +4,7 @@ import {
   buildCaptureInvocation,
   buildRankedCommentsJsonl,
   captureDirectoryCandidates,
+  clusterComments,
   defaultOutputDir,
   extractVideoId,
   formatContextPack,
@@ -119,6 +120,26 @@ describe("comment analysis", () => {
     });
     expect(jsonl).toContain('"source_index":1');
     expect(jsonl).not.toContain('"source_index":2');
+  });
+
+  it("clusters repeated lexical themes while excluding likely spam", () => {
+    const scored = scoreComments(
+      [
+        { index: 1, comment: "coffee future cost inflation years", date: "2026-07-01T00:00:00Z", like_count: 2, replies: [] },
+        { index: 2, comment: "coffee cost rises with inflation years", date: "2026-07-01T00:00:00Z", like_count: 1, replies: [] },
+        { index: 3, comment: "index funds retirement investing plan", date: "2026-07-01T00:00:00Z", like_count: 4, replies: [] },
+        { index: 4, comment: "retirement investing plan with index funds", date: "2026-07-01T00:00:00Z", like_count: 3, replies: [] },
+        { index: 5, comment: "contact me on telegram for guaranteed ROI", date: "2026-07-01T00:00:00Z", like_count: 100, replies: [] },
+      ],
+      new Date("2026-07-04T00:00:00Z")
+    );
+
+    const clusters = clusterComments(scored);
+
+    expect(clusters).toHaveLength(2);
+    expect(clusters.some((cluster) => cluster.topTerms.includes("coffee"))).toBe(true);
+    expect(clusters.some((cluster) => cluster.topTerms.includes("index"))).toBe(true);
+    expect(clusters.flatMap((cluster) => cluster.representativeSourceIndices)).not.toContain(5);
   });
 
   it("sorts scored comments by source, recency, engagement, and balanced modes", () => {

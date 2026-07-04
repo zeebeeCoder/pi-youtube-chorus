@@ -9,6 +9,7 @@ import {
   extractVideoId,
   formatCommentSignals,
   formatContextPack,
+  formatTimestamp,
   normalizeTranscript,
   parseCommentsJson,
   scoreComments,
@@ -92,6 +93,12 @@ const timedText = JSON.stringify({
 });
 
 describe("transcript normalization", () => {
+  it("formats timestamps for minute and hour-long transcript positions", () => {
+    expect(formatTimestamp(undefined)).toBe("00:00");
+    expect(formatTimestamp(61_000)).toBe("01:01");
+    expect(formatTimestamp(3_661_000)).toBe("1:01:01");
+  });
+
   it("turns YouTube timedtext JSON into readable timestamped text and segments", () => {
     const normalized = normalizeTranscript(timedText);
     expect(normalized.sourceFormat).toBe("youtube-timedtext-json");

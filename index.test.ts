@@ -1,27 +1,41 @@
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import registerYoutubeChorus from "./index.js";
 
+type ToolLike = {
+  name: string;
+  execute: (...args: unknown[]) => Promise<{ details?: Record<string, unknown> }>;
+};
+
+type MockPi = {
+  registerTool: ReturnType<typeof vi.fn>;
+  registerCommand: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  exec: ReturnType<typeof vi.fn>;
+  sendUserMessage: ReturnType<typeof vi.fn>;
+};
+
 describe("youtube chorus extension", () => {
-  let tools: Map<string, any>;
-  let commands: Map<string, any>;
-  let mockPi: any;
+  let tools: Map<string, ToolLike>;
+  let commands: Map<string, unknown>;
+  let mockPi: MockPi;
   let tempDir: string | undefined;
 
   beforeEach(() => {
     tools = new Map();
     commands = new Map();
     mockPi = {
-      registerTool: vi.fn((tool: any) => tools.set(tool.name, tool)),
-      registerCommand: vi.fn((name: string, command: any) => commands.set(name, command)),
+      registerTool: vi.fn((tool: ToolLike) => tools.set(tool.name, tool)),
+      registerCommand: vi.fn((name: string, command: unknown) => commands.set(name, command)),
       on: vi.fn(),
       exec: vi.fn(),
       sendUserMessage: vi.fn(),
     };
-    registerYoutubeChorus(mockPi);
+    registerYoutubeChorus(mockPi as unknown as ExtensionAPI);
   });
 
   afterEach(async () => {
@@ -37,7 +51,7 @@ describe("youtube chorus extension", () => {
 
   it("fails loudly when context is pointed at the wrong capture directory", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "yt-chorus-test-"));
-    const tool = tools.get("youtube_chorus_context");
+    const tool = tools.get("youtube_chorus_context")!;
 
     await expect(
       tool.execute(
@@ -52,7 +66,7 @@ describe("youtube chorus extension", () => {
 
   it("captures into canonical layout and keeps derived manifest paths valid", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "yt-chorus-test-"));
-    mockPi.exec.mockImplementation(async (_command: string, args: string[], options: any) => {
+    mockPi.exec.mockImplementation(async (_command: string, args: string[], options: { cwd?: string }) => {
       expect(options.cwd).toBe(tempDir);
       const outputDir = args[args.indexOf("--output-dir") + 1];
       await mkdir(outputDir, { recursive: true });
@@ -103,7 +117,7 @@ describe("youtube chorus extension", () => {
       return { code: 0, stdout: `done\n${basename(outputDir)}\n`, stderr: "", killed: false };
     });
 
-    const tool = tools.get("youtube_chorus_capture");
+    const tool = tools.get("youtube_chorus_capture")!;
     const result = await tool.execute(
       "tool-call-id",
       { videoUrl: "https://youtu.be/dQw4w9WgXcQ", outputDir: "capture", maxComments: 1, maxWords: 1000 },
@@ -112,7 +126,7 @@ describe("youtube chorus extension", () => {
       { cwd: tempDir }
     );
 
-    const captureDir = result.details.captureDir;
+    const captureDir = (result.details as { captureDir: string }).captureDir;
     const manifest = JSON.parse(await readFile(join(captureDir, "manifest.json"), "utf8"));
 
     expect(manifest.artifact_layout).toBe("canonical");

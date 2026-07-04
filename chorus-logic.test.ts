@@ -8,6 +8,8 @@ import {
   extractVideoId,
   formatContextPack,
   normalizeTranscript,
+  scoreComments,
+  sortScoredComments,
   truncateText,
 } from "./chorus-logic.js";
 
@@ -117,6 +119,22 @@ describe("comment analysis", () => {
     });
     expect(jsonl).toContain('"source_index":1');
     expect(jsonl).not.toContain('"source_index":2');
+  });
+
+  it("sorts scored comments by source, recency, engagement, and balanced modes", () => {
+    const scored = scoreComments(
+      [
+        { index: 1, comment: "older engaged comment with enough words to carry some depth", date: "2026-07-01T00:00:00Z", like_count: 10, replies: [] },
+        { index: 2, comment: "newest", date: "2026-07-03T00:00:00Z", like_count: 0, replies: [] },
+        { index: 3, comment: "middle but highly replied", date: "2026-07-02T00:00:00Z", like_count: 1, replies: ["a", "b", "c"] },
+      ],
+      new Date("2026-07-04T00:00:00Z")
+    );
+
+    expect(sortScoredComments(scored, "source").map((comment) => comment.sourceIndex)).toEqual([1, 2, 3]);
+    expect(sortScoredComments(scored, "recency").map((comment) => comment.sourceIndex)).toEqual([2, 3, 1]);
+    expect(sortScoredComments(scored, "engagement")[0].sourceIndex).toBe(1);
+    expect(sortScoredComments(scored, "balanced")[0].sourceIndex).toBe(1);
   });
 
   it("does not hard-code spam flags for one video's named entities", () => {

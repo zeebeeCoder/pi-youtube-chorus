@@ -38,7 +38,7 @@ Then, by default, it post-processes those raw files into model-ready canonical a
 - `comments.clusters.json` — lightweight lexical comment clusters for recurring audience themes
 - `transcript.normalized.txt` — readable transcript view, including YouTube timedtext JSON normalization
 
-With the default `artifactLayout: "canonical"`, extractor-only raw files are moved under `raw/`, while model-facing sources stay at the capture root.
+With the default `artifactLayout: "canonical"`, extractor-only raw files are moved under `raw/`, while model-facing sources stay at the capture root. Canonical layout requires `postProcess: true`; if post-processing is disabled, the extension leaves the raw `yt-capture` layout intact and reports a warning.
 
 Parameters:
 

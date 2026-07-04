@@ -450,6 +450,9 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      const layoutWarning = params.postProcess === false && (params.artifactLayout ?? "canonical") === "canonical"
+        ? "artifactLayout=canonical requires postProcess=true; leaving raw yt-capture layout intact."
+        : undefined;
       const stats = manifest.stats ?? {};
       const derivedFiles = derived?.files ?? manifest.derived?.files ?? {};
 
@@ -466,6 +469,7 @@ export default function (pi: ExtensionAPI) {
               `Comment clusters: ${stats.comment_cluster_count ?? "unknown"}`,
               `Scored comments JSONL: ${derivedFiles.comments_scored_jsonl ?? manifest.files?.comments_scored_jsonl ?? "not generated"}`,
               `Artifact layout: ${manifest.artifact_layout ?? "legacy"}${canonicalLayout ? ` (raw files in ${canonicalLayout.rawDir})` : ""}`,
+              ...(layoutWarning ? [`Warning: ${layoutWarning}`] : []),
               "Next: call youtube_chorus_context with this captureDir to load model-ready transcript + ranked comments.",
             ].join("\n"),
           },
@@ -476,6 +480,7 @@ export default function (pi: ExtensionAPI) {
           manifest,
           derived,
           canonicalLayout,
+          layoutWarning,
           invocation: { command: invocation.command, args: invocation.args, outputDir: invocation.outputDir },
           environment: {
             ytMcpDirSource: params.ytMcpDir ? "param" : ytMcpDirFromEnv ? "YT_MCP_DIR" : "PATH",

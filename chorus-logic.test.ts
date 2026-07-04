@@ -123,6 +123,17 @@ describe("comment analysis", () => {
     expect(jsonl).toContain('"source_index":1');
     expect(jsonl).not.toContain('"source_index":2');
   });
+
+  it("does not hard-code spam flags for one video's named entities", () => {
+    const comments = [
+      { index: 1, comment: "The Clardven API was mentioned in another source", date: "2026-07-04T00:00:00Z", like_count: 0, replies: [] },
+      { index: 2, comment: "The Manifestation Code by Alexander Pierce is a book I read", date: "2026-07-04T00:00:00Z", like_count: 0, replies: [] },
+      { index: 3, comment: "Father Obah was named in the thread", date: "2026-07-04T00:00:00Z", like_count: 0, replies: [] },
+    ];
+
+    const analysis = analyzeComments(comments, new Date("2026-07-05T00:00:00Z"));
+    expect(analysis.likelySpamCount).toBe(0);
+  });
 });
 
 describe("context formatting", () => {

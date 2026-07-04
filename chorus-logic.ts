@@ -340,9 +340,7 @@ function commentLikes(comment: RawCommentRecord): number {
 function detectLikelySpam(text: string): string[] {
   const checks: Array<[RegExp, string]> = [
     [/\b(?:whats\s*app|telegram|tlgrm|dm me|contact me)\b/i, "contact-channel"],
-    [/spiritual counselor|bring back (?:your )?ex|father obah/i, "relationship-spell"],
-    [/\bclardven\b/i, "crypto-promo"],
-    [/manifestation code|alexander pierce/i, "book-promo"],
+    [/spiritual counselor|bring back (?:your )?ex/i, "relationship-spell"],
     [/\b(?:guaranteed|risk-free)\b.*\b(?:profit|returns?|roi)\b/i, "return-guarantee"],
     [/\$\d+[\dkm,.]*\s*(?:roi|profit|return)|(?:over|made)\s+\$\d+[\dkm,.]*\s+in\s+(?:weeks?|months?)/i, "implausible-returns"],
   ];

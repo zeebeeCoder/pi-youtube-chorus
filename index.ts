@@ -20,6 +20,25 @@ import {
   type ContextPackInput,
 } from "./chorus-logic.js";
 
+interface CaptureManifest {
+  captured_at?: string;
+  video_url?: string;
+  video_id?: string;
+  title?: string;
+  channel?: string;
+  stats?: Record<string, unknown>;
+  files?: Record<string, string>;
+  derived?: {
+    generated_at?: string;
+    files?: Record<string, string>;
+    warnings?: string[];
+    [key: string]: unknown;
+  };
+  artifact_layout?: string;
+  raw_dir?: string;
+  [key: string]: unknown;
+}
+
 const CaptureParams = Type.Object({
   videoUrl: Type.String({ description: "YouTube URL or bare video id to capture." }),
   outputDir: Type.Optional(
@@ -140,13 +159,13 @@ async function readTextIfExists(path: string): Promise<string | undefined> {
   }
 }
 
-async function readJsonIfExists<T = Record<string, any>>(path: string): Promise<T | undefined> {
+async function readJsonIfExists<T = Record<string, unknown>>(path: string): Promise<T | undefined> {
   const text = await readTextIfExists(path);
   if (!text) return undefined;
   return JSON.parse(text) as T;
 }
 
-function artifactPath(captureDir: string, manifest: Record<string, any> | undefined, key: string, file: string) {
+function artifactPath(captureDir: string, manifest: CaptureManifest | undefined, key: string, file: string) {
   const manifestPath = manifest?.files?.[key];
   if (typeof manifestPath === "string") {
     return isAbsolute(manifestPath) ? manifestPath : resolve(captureDir, manifestPath);
@@ -207,7 +226,7 @@ function commentOptions(params: {
   };
 }
 
-async function moveRawArtifactsToRawDir(captureDir: string, manifest: Record<string, any>) {
+async function moveRawArtifactsToRawDir(captureDir: string, manifest: CaptureManifest) {
   const rawDir = join(captureDir, "raw");
   await mkdir(rawDir, { recursive: true });
 
@@ -233,14 +252,15 @@ async function moveRawArtifactsToRawDir(captureDir: string, manifest: Record<str
     moved[key] = nextPath;
   }
 
-  const derived = manifest.derived && typeof manifest.derived === "object"
+  const existingDerivedFiles = manifest.derived?.files ?? {};
+  const derived = manifest.derived
     ? {
         ...manifest.derived,
         files: Object.fromEntries(
-          Object.keys(manifest.derived.files ?? {}).map((key) => [key, files[key] ?? manifest.derived.files[key]])
+          Object.keys(existingDerivedFiles).map((key) => [key, files[key] ?? existingDerivedFiles[key]])
         ),
       }
-    : manifest.derived;
+    : undefined;
 
   manifest.files = files;
   manifest.derived = derived;
@@ -250,7 +270,7 @@ async function moveRawArtifactsToRawDir(captureDir: string, manifest: Record<str
   return { rawDir, moved };
 }
 
-async function materializeDerivedArtifacts(captureDir: string, manifest: Record<string, any>) {
+async function materializeDerivedArtifacts(captureDir: string, manifest: CaptureManifest) {
   const files = { ...(manifest.files ?? {}) };
   const stats: Record<string, unknown> = {};
   const warnings: string[] = [];
@@ -322,7 +342,7 @@ async function materializeDerivedArtifacts(captureDir: string, manifest: Record<
   return { files: derivedFiles, stats, warnings };
 }
 
-async function loadTranscriptForContext(captureDir: string, manifest: Record<string, any> | undefined) {
+async function loadTranscriptForContext(captureDir: string, manifest: CaptureManifest | undefined) {
   const normalizedPath = artifactPath(captureDir, manifest, "transcript_normalized", "transcript.normalized.txt");
   const normalized = await readTextIfExists(normalizedPath);
   if (normalized !== undefined) return { text: normalized, path: normalizedPath, sourceFormat: "normalized" };
@@ -337,7 +357,7 @@ async function loadTranscriptForContext(captureDir: string, manifest: Record<str
 
 async function loadCommentsForContext(
   captureDir: string,
-  manifest: Record<string, any> | undefined,
+  manifest: CaptureManifest | undefined,
   options: CommentContextOptions
 ) {
   const commentsJsonPath = artifactPath(captureDir, manifest, "comments_json", "comments.json");
@@ -429,7 +449,7 @@ export default function (pi: ExtensionAPI) {
 
       const captureDir = await findCaptureDirectory(ctx.cwd, invocation.outputDir, result.stdout);
       const manifestPath = join(captureDir, "manifest.json");
-      const manifest = await readJsonIfExists<Record<string, any>>(manifestPath);
+      const manifest = await readJsonIfExists<CaptureManifest>(manifestPath);
       if (!manifest) throw new Error(`Capture manifest is missing or unreadable: ${manifestPath}`);
 
       let derived: Awaited<ReturnType<typeof materializeDerivedArtifacts>> | undefined;
@@ -512,7 +532,7 @@ export default function (pi: ExtensionAPI) {
 
       const captureDir = resolve(ctx.cwd, params.captureDir);
       const manifestPath = join(captureDir, "manifest.json");
-      const manifest = await readJsonIfExists<Record<string, any>>(manifestPath);
+      const manifest = await readJsonIfExists<CaptureManifest>(manifestPath);
       if (!manifest) {
         const suggestions = await nearbyCaptureDirs(ctx.cwd);
         throw new Error(

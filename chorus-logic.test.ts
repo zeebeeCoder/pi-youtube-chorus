@@ -3,6 +3,7 @@ import {
   analyzeComments,
   buildCaptureInvocation,
   buildRankedCommentsJsonl,
+  buildRankedCommentsMarkdown,
   captureDirectoryCandidates,
   clusterComments,
   defaultOutputDir,
@@ -175,6 +176,29 @@ describe("comment analysis", () => {
     expect(sortScoredComments(scored, "recency").map((comment) => comment.sourceIndex)).toEqual([2, 3, 1]);
     expect(sortScoredComments(scored, "engagement")[0].sourceIndex).toBe(1);
     expect(sortScoredComments(scored, "balanced")[0].sourceIndex).toBe(1);
+  });
+
+  it("renders ranked comments markdown with scores and optional replies", () => {
+    const analysis = analyzeComments(
+      [
+        { index: 1, comment: "Useful investing comment", user_name: "@demo", date: "2026-07-04T00:00:00Z", like_count: 2, replies: ["thanks"] },
+      ],
+      new Date("2026-07-04T00:00:00Z")
+    );
+
+    const markdown = buildRankedCommentsMarkdown(analysis.comments, {
+      format: "ranked-markdown",
+      sort: "balanced",
+      maxComments: 1,
+      includeReplies: true,
+      includeLikelySpam: false,
+    });
+
+    expect(markdown).toContain("# Ranked YouTube Comments");
+    expect(markdown).toContain("source #1");
+    expect(markdown).toContain("Scores: recency=");
+    expect(markdown).toContain("Replies:");
+    expect(markdown).toContain("1. thanks");
   });
 
   it("formats comment signals with selection, spam, and cluster summaries", () => {

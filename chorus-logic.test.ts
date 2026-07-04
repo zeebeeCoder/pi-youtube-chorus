@@ -137,10 +137,18 @@ describe("comment analysis", () => {
 });
 
 describe("context formatting", () => {
-  it("truncates long sections with explicit notices", () => {
+  it("truncates long sections without exceeding the requested budget", () => {
     const truncated = truncateText("abcdef", 4, "Transcript");
     expect(truncated.truncated).toBe(true);
-    expect(truncated.text).toContain("Transcript truncated");
+    expect(truncated.text.length).toBeLessThanOrEqual(4);
+    expect(truncated.emittedChars).toBe(4);
+  });
+
+  it("treats zero character budget as no emitted text", () => {
+    const truncated = truncateText("abcdef", 0, "Transcript");
+    expect(truncated.truncated).toBe(true);
+    expect(truncated.text).toBe("");
+    expect(truncated.emittedChars).toBe(0);
   });
 
   it("formats transcript and comments as one context pack", () => {

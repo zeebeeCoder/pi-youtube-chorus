@@ -300,7 +300,16 @@ export function transcriptSegmentsToJsonl(segments: TranscriptSegment[]): string
 }
 
 export function truncateText(text: string, maxChars: number, label: string): TruncatedText {
-  if (maxChars <= 0 || text.length <= maxChars) {
+  if (maxChars <= 0) {
+    return {
+      text: "",
+      truncated: text.length > 0,
+      originalChars: text.length,
+      emittedChars: 0,
+    };
+  }
+
+  if (text.length <= maxChars) {
     return {
       text,
       truncated: false,
@@ -310,7 +319,7 @@ export function truncateText(text: string, maxChars: number, label: string): Tru
   }
 
   const notice = `\n\n[${label} truncated: showing ${maxChars} of ${text.length} characters. Use artifact paths or a smaller chunk request for full data.]`;
-  const emitted = text.slice(0, Math.max(0, maxChars - notice.length)) + notice;
+  const emitted = (text.slice(0, Math.max(0, maxChars - notice.length)) + notice).slice(0, maxChars);
 
   return {
     text: emitted,

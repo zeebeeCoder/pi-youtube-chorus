@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Pi extension for YouTube transcript and comment capture as model-ready context.",
   "type": "module",
-  "private": true,
   "keywords": [
+    "pi",
     "pi-package",
     "pi-extension",
     "youtube",
@@ -12,6 +12,9 @@
     "transcript",
     "context"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

@@ -192,10 +192,6 @@ export function captureDirectoryCandidates(stdout: string): string[] {
   return [...new Set(candidates)];
 }
 
-export function parseCaptureDirectory(stdout: string): string | undefined {
-  return captureDirectoryCandidates(stdout)[0];
-}
-
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

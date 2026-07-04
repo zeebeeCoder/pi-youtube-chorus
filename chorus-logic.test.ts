@@ -8,7 +8,6 @@ import {
   extractVideoId,
   formatContextPack,
   normalizeTranscript,
-  parseCaptureDirectory,
   truncateText,
 } from "./chorus-logic.js";
 
@@ -69,10 +68,6 @@ describe("capture invocation", () => {
 });
 
 describe("capture output parsing", () => {
-  it("uses the final non-empty stdout line as the capture directory", () => {
-    expect(parseCaptureDirectory("table output\n/tmp/yt-capture-abc\n")).toBe("/tmp/yt-capture-abc");
-  });
-
   it("extracts labelled and basename capture directory candidates", () => {
     expect(captureDirectoryCandidates("Capture directory: .pi/youtube-chorus/2026-demo\n")).toEqual([
       ".pi/youtube-chorus/2026-demo",

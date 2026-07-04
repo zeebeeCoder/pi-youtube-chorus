@@ -1,0 +1,42 @@
+{
+  "name": "pi-youtube-chorus",
+  "version": "0.1.0",
+  "description": "Pi extension for YouTube transcript and comment capture as model-ready context.",
+  "type": "module",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "youtube",
+    "comments",
+    "transcript",
+    "context"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^20.0.0",
+    "typebox": "*",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  }
+}

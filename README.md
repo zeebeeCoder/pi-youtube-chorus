@@ -100,7 +100,8 @@ Queues a prompt that asks the agent to capture, load, and synthesize the video f
 ## Install locally while developing
 
 ```bash
-cd ~/code/opti/pi-youtube-chorus
+git clone https://github.com/zeebeeCoder/pi-youtube-chorus.git
+cd pi-youtube-chorus
 npm install
 pi -e .
 ```
@@ -108,7 +109,7 @@ pi -e .
 Or add it to Pi settings later:
 
 ```bash
-pi install ~/code/opti/pi-youtube-chorus
+pi install /path/to/pi-youtube-chorus
 ```
 
 ## Test

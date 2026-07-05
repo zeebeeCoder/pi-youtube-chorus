@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeComments,
-  buildCaptureInvocation,
   buildRankedCommentsJsonl,
   buildRankedCommentsMarkdown,
-  captureDirectoryCandidates,
   clusterComments,
   defaultOutputDir,
   extractVideoId,
@@ -33,36 +31,7 @@ describe("extractVideoId", () => {
   });
 });
 
-describe("capture invocation", () => {
-  it("defaults to yt-capture on PATH", () => {
-    const invocation = buildCaptureInvocation({
-      videoUrl: "https://youtu.be/dQw4w9WgXcQ",
-      cwd: "/tmp/project",
-      maxComments: 10,
-      maxWords: 500,
-      now: new Date("2026-07-04T00:00:00Z"),
-    });
-
-    expect(invocation.command).toBe("yt-capture");
-    expect(invocation.args).toContain("--output-dir");
-    expect(invocation.args).toContain("--max-comments");
-    expect(invocation.args).toContain("10");
-    expect(invocation.outputDir).toContain(".pi/youtube-chorus/2026-07-04T00-00-00-000Z-dQw4w9WgXcQ");
-  });
-
-  it("uses uv project mode when ytMcpDir is supplied", () => {
-    const invocation = buildCaptureInvocation({
-      videoUrl: "dQw4w9WgXcQ",
-      cwd: "/tmp/project",
-      outputDir: "captures/demo",
-      ytMcpDir: "/repo/yt-mcp",
-    });
-
-    expect(invocation.command).toBe("uv");
-    expect(invocation.args.slice(0, 4)).toEqual(["run", "--project", "/repo/yt-mcp", "yt-capture"]);
-    expect(invocation.outputDir).toBe("/tmp/project/captures/demo");
-  });
-
+describe("capture paths", () => {
   it("builds deterministic default output directories", () => {
     expect(
       defaultOutputDir(
@@ -71,17 +40,6 @@ describe("capture invocation", () => {
         new Date("2026-07-04T12:34:56Z")
       )
     ).toBe("/tmp/project/.pi/youtube-chorus/2026-07-04T12-34-56-000Z-dQw4w9WgXcQ");
-  });
-});
-
-describe("capture output parsing", () => {
-  it("extracts labelled and basename capture directory candidates", () => {
-    expect(captureDirectoryCandidates("Capture directory: .pi/youtube-chorus/2026-demo\n")).toEqual([
-      ".pi/youtube-chorus/2026-demo",
-    ]);
-    expect(captureDirectoryCandidates("done\n09-28-45-126Z-EhbC2066PiY\n")).toEqual([
-      "09-28-45-126Z-EhbC2066PiY",
-    ]);
   });
 });
 

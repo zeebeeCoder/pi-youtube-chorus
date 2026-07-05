@@ -1,14 +1,15 @@
 import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
   analyzeComments,
-  buildCaptureInvocation,
   buildRankedCommentsJsonl,
   buildRankedCommentsMarkdown,
-  captureDirectoryCandidates,
+  defaultOutputDir,
+  extractVideoId,
   formatCommentSignals,
   formatContextPack,
   normalizeTranscript,
@@ -19,6 +20,30 @@ import {
   type CommentSort,
   type ContextPackInput,
 } from "./chorus-logic.js";
+import {
+  apiKeyFromEnv,
+  applyCommentBudget,
+  buildCaptureManifest,
+  buildYtDlpTranscriptPlan,
+  captionCandidateFromPath,
+  classifyRetry,
+  envFileCandidates,
+  formatBundleMarkdown,
+  formatCommentsJson,
+  formatCommentsJsonl,
+  formatCommentsMarkdown,
+  parseCaptionTranscript,
+  parseEnvFile,
+  parseYoutubeDataApiCommentsPage,
+  parseYoutubeDataApiVideoMetadata,
+  selectCaptionFile,
+  shouldContinueCommentsPagination,
+  type CaptionCandidate,
+  type Comment,
+  type CommentBudgetState,
+  type TranscriptResult,
+  type VideoMetadata,
+} from "./extractor-logic.js";
 
 interface CaptureManifest {
   captured_at?: string;
@@ -53,15 +78,9 @@ const CaptureParams = Type.Object({
   maxWords: Type.Optional(
     Type.Integer({ default: 80000, minimum: 0, description: "Maximum total comment words." })
   ),
-  ytMcpDir: Type.Optional(
-    Type.String({
-      description:
-        "Optional path to the yt-mcp repo. If omitted, pi-youtube-chorus expects yt-capture on PATH. Can also be set with YT_MCP_DIR.",
-    })
-  ),
-  envFile: Type.Optional(Type.String({ description: "Optional .env file passed to yt-capture." })),
+  envFile: Type.Optional(Type.String({ description: "Optional .env file to read YOUTUBE_API_KEY from." })),
   configDir: Type.Optional(
-    Type.String({ description: "Optional config directory passed to yt-capture." })
+    Type.String({ description: "Optional config directory containing a .env file with YOUTUBE_API_KEY." })
   ),
   postProcess: Type.Optional(
     Type.Boolean({
@@ -74,7 +93,7 @@ const CaptureParams = Type.Object({
     StringEnum(["canonical", "legacy"] as const, {
       default: "canonical",
       description:
-        "canonical keeps model-facing JSONL artifacts at the capture root and moves extractor-only raw files under raw/. legacy leaves all yt-capture files at the root.",
+        "canonical keeps model-facing JSONL artifacts at the capture root and moves extractor-only raw files under raw/. legacy leaves all native extractor files at the root."
     })
   ),
 });
@@ -173,30 +192,6 @@ function artifactPath(captureDir: string, manifest: CaptureManifest | undefined,
   return join(captureDir, file);
 }
 
-function unique<T>(items: T[]): T[] {
-  return [...new Set(items)];
-}
-
-async function findCaptureDirectory(cwd: string, expectedOutputDir: string, stdout: string): Promise<string> {
-  const candidates = unique([
-    expectedOutputDir,
-    ...captureDirectoryCandidates(stdout).map((candidate) => resolve(cwd, candidate)),
-  ]);
-
-  for (const candidate of candidates) {
-    if (await pathExists(join(candidate, "manifest.json"))) return candidate;
-  }
-
-  throw new Error(
-    [
-      "yt-capture completed but pi-youtube-chorus could not find manifest.json.",
-      `Expected: ${expectedOutputDir}`,
-      `Tried: ${candidates.join(", ")}`,
-      "This usually means yt-capture changed its output contract or wrote outside the requested --output-dir.",
-    ].join("\n")
-  );
-}
-
 async function nearbyCaptureDirs(cwd: string): Promise<string[]> {
   const base = join(cwd, ".pi", "youtube-chorus");
   try {
@@ -224,6 +219,318 @@ function commentOptions(params: {
     includeReplies: params.includeReplies ?? true,
     includeLikelySpam: params.includeLikelySpam ?? false,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function jsonString(value: unknown): string {
+  return JSON.stringify(value, null, 2) + "\n";
+}
+
+function wordCount(text: string): number {
+  return (text.match(/\S+/g) ?? []).length;
+}
+
+function youtubeDataApiUrl(endpoint: "videos" | "commentThreads", params: Record<string, string | number | undefined>) {
+  const url = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
+  return url.toString();
+}
+
+function youtubeApiErrorReason(body: unknown): string | undefined {
+  if (!isRecord(body) || !isRecord(body.error)) return undefined;
+  const errors = Array.isArray(body.error.errors) ? body.error.errors : [];
+  const first = errors.find(isRecord);
+  return typeof first?.reason === "string"
+    ? first.reason
+    : typeof body.error.status === "string"
+      ? body.error.status
+      : undefined;
+}
+
+function abortErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error("Operation aborted."));
+  return new Promise((resolvePromise, reject) => {
+    const timeout = setTimeout(resolvePromise, ms);
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(new Error("Operation aborted."));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+async function fetchJsonWithRetry(url: string, signal?: AbortSignal, maxAttempts = 3, timeoutMs = 30_000): Promise<unknown> {
+  let lastMessage = "request failed";
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal?.aborted) throw new Error("Operation aborted.");
+
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: controller.signal });
+    } catch (error) {
+      if (signal?.aborted) throw new Error("Operation aborted.");
+
+      const decision = classifyRetry({ networkError: true, attempt, maxAttempts });
+      lastMessage = timedOut ? `YouTube API request timed out after ${timeoutMs}ms` : abortErrorMessage(error);
+      if (!decision.retry) throw new Error(lastMessage);
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      await wait(250 * attempt, signal);
+      continue;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = undefined;
+    }
+
+    if (response.ok) return body;
+
+    const reason = youtubeApiErrorReason(body);
+    const decision = classifyRetry({ status: response.status, reason, attempt, maxAttempts });
+    lastMessage = `YouTube API HTTP ${response.status}${reason ? ` (${reason})` : ""}`;
+    if (!decision.retry) {
+      throw new Error(`${lastMessage}; ${decision.reason}`);
+    }
+
+    await wait(250 * attempt, signal);
+  }
+
+  throw new Error(lastMessage);
+}
+
+async function loadYouTubeApiKey(cwd: string, params: { envFile?: string; configDir?: string }) {
+  const processKey = apiKeyFromEnv(process.env);
+  if (processKey) return { apiKey: processKey, source: "process.env", candidates: [] as string[] };
+
+  const candidates = envFileCandidates({ cwd, homeDir: homedir(), envFile: params.envFile, configDir: params.configDir });
+  for (const candidate of candidates) {
+    const text = await readTextIfExists(candidate);
+    if (!text) continue;
+    const apiKey = apiKeyFromEnv(parseEnvFile(text));
+    if (apiKey) return { apiKey, source: candidate, candidates };
+  }
+
+  return { apiKey: undefined, source: undefined, candidates };
+}
+
+async function fetchVideoMetadata(videoId: string, videoUrl: string, apiKey: string, signal?: AbortSignal): Promise<VideoMetadata> {
+  const url = youtubeDataApiUrl("videos", {
+    part: "snippet",
+    id: videoId,
+    key: apiKey,
+  });
+  const body = await fetchJsonWithRetry(url, signal);
+  const parsed = parseYoutubeDataApiVideoMetadata(body, videoUrl);
+  if (!parsed.ok) throw new Error(parsed.error.message);
+  return parsed.value;
+}
+
+async function fetchComments(
+  videoId: string,
+  apiKey: string,
+  options: { maxComments: number; maxWords: number; signal?: AbortSignal }
+): Promise<{ state: CommentBudgetState; warnings: string[] }> {
+  const warnings: string[] = [];
+  if (options.maxComments <= 0) {
+    return { state: { accepted: [], acceptedWordCount: 0, stopReason: "budget", budgetKind: "comments" }, warnings };
+  }
+  if (options.maxWords <= 0) {
+    return { state: { accepted: [], acceptedWordCount: 0, stopReason: "budget", budgetKind: "words" }, warnings };
+  }
+
+  let state: CommentBudgetState = { accepted: [], acceptedWordCount: 0 };
+  let pageToken: string | undefined;
+
+  while (!state.stopReason) {
+    const remaining = Math.max(0, options.maxComments - state.accepted.length);
+    const url = youtubeDataApiUrl("commentThreads", {
+      part: "snippet,replies",
+      videoId,
+      key: apiKey,
+      maxResults: Math.min(100, Math.max(1, remaining)),
+      textFormat: "plainText",
+      order: "relevance",
+      pageToken,
+    });
+
+    try {
+      const body = await fetchJsonWithRetry(url, options.signal);
+      const parsed = parseYoutubeDataApiCommentsPage(body, state.accepted.length + 1);
+      if (!parsed.ok) throw new Error(parsed.error.message);
+      state = applyCommentBudget(parsed.value.comments, {
+        maxComments: options.maxComments,
+        maxWords: options.maxWords,
+        currentComments: state.accepted,
+        currentWordCount: state.acceptedWordCount,
+        nextPageToken: parsed.value.nextPageToken,
+      });
+      pageToken = shouldContinueCommentsPagination(state) ? state.nextPageToken : undefined;
+      if (!pageToken && !state.stopReason) {
+        state = { ...state, stopReason: "pages-exhausted" };
+      }
+    } catch (error) {
+      const message = `comment capture stopped early: ${abortErrorMessage(error)}`;
+      warnings.push(message);
+      return { state: { ...state, stopReason: "error" }, warnings };
+    }
+  }
+
+  return { state, warnings };
+}
+
+async function preflightYtDlp(pi: ExtensionAPI, cwd: string, signal?: AbortSignal): Promise<string> {
+  const result = await pi.exec("yt-dlp", ["--version"], { signal, timeout: 30_000, cwd });
+  if (result.code !== 0) {
+    throw new Error(
+      [
+        "yt-dlp is required for native transcript capture but the preflight failed.",
+        "Install it with: brew install yt-dlp",
+        result.stderr || result.stdout,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+  return result.stdout.split(/\r?\n/).find(Boolean) ?? "unknown";
+}
+
+async function listCaptionCandidates(outputDir: string, source: "manual" | "automatic", before: Set<string>) {
+  const entries = await readdir(outputDir);
+  return entries
+    .filter((entry) => !before.has(entry))
+    .map((entry) => captionCandidateFromPath(join(outputDir, entry), source))
+    .filter((candidate): candidate is CaptionCandidate => candidate !== undefined);
+}
+
+async function captureTranscriptWithYtDlp(
+  pi: ExtensionAPI,
+  videoUrl: string,
+  outputDir: string,
+  cwd: string,
+  signal?: AbortSignal
+): Promise<{ transcript: TranscriptResult; rawTranscript?: string; warnings: string[] }> {
+  const warnings: string[] = [];
+  const candidates: CaptionCandidate[] = [];
+  const badPaths = new Set<string>();
+
+  for (const step of buildYtDlpTranscriptPlan({ videoUrl, outputDir })) {
+    const before = new Set(await readdir(outputDir));
+    const result = await pi.exec(step.command, step.args, { signal, timeout: 5 * 60_000, cwd });
+    if (result.code !== 0) {
+      warnings.push(`yt-dlp ${step.phase} subtitle pass failed: ${result.stderr || result.stdout}`);
+      continue;
+    }
+
+    candidates.push(...(await listCaptionCandidates(outputDir, step.phase, before)));
+
+    while (true) {
+      const selected = selectCaptionFile(candidates.filter((candidate) => !badPaths.has(candidate.path)));
+      if (!selected) break;
+
+      const raw = await readFile(selected.path, "utf8");
+      const parsed = parseCaptionTranscript(raw, selected);
+      if (parsed.ok) {
+        return { transcript: parsed.value, rawTranscript: selected.format === "json3" ? raw : parsed.value.text, warnings };
+      }
+
+      warnings.push(`caption parse failed for ${selected.path}: ${parsed.error.message}`);
+      badPaths.add(selected.path);
+    }
+  }
+
+  return { transcript: { status: "not-found", warnings }, warnings };
+}
+
+async function writeNativeCaptureArtifacts(input: {
+  captureDir: string;
+  capturedAt: string;
+  video: VideoMetadata;
+  transcript: TranscriptResult;
+  rawTranscript?: string;
+  comments: CommentBudgetState;
+  commentsWarnings: string[];
+  ytDlpVersion: string;
+}) {
+  const files: Record<string, string> = {
+    metadata: join(input.captureDir, "metadata.json"),
+    comments_json: join(input.captureDir, "comments.json"),
+    comments_jsonl: join(input.captureDir, "comments.jsonl"),
+    comments_markdown: join(input.captureDir, "comments.md"),
+    bundle: join(input.captureDir, "bundle.md"),
+  };
+
+  await writeFile(files.metadata, jsonString(input.video), "utf8");
+
+  if (input.transcript.status === "available") {
+    files.transcript_json = join(input.captureDir, "transcript.json");
+    files.transcript_text = join(input.captureDir, "transcript.txt");
+    files.transcript_source = input.transcript.filePath;
+    await writeFile(
+      files.transcript_json,
+      jsonString({
+        status: input.transcript.status,
+        source: input.transcript.source,
+        language: input.transcript.language,
+        is_automatic: input.transcript.isAutomatic,
+        file_path: input.transcript.filePath,
+        segments: input.transcript.segments,
+        warnings: input.transcript.warnings,
+      }),
+      "utf8"
+    );
+    await writeFile(files.transcript_text, input.rawTranscript ?? input.transcript.text, "utf8");
+  }
+
+  await writeFile(files.comments_json, formatCommentsJson(input.comments.accepted), "utf8");
+  await writeFile(files.comments_jsonl, formatCommentsJsonl(input.comments.accepted), "utf8");
+  await writeFile(files.comments_markdown, formatCommentsMarkdown(input.comments.accepted), "utf8");
+  await writeFile(
+    files.bundle,
+    formatBundleMarkdown({
+      video: input.video,
+      transcript: input.transcript,
+      comments: input.comments.accepted,
+    }),
+    "utf8"
+  );
+
+  const manifest = buildCaptureManifest({
+    capturedAt: input.capturedAt,
+    video: input.video,
+    outputDir: input.captureDir,
+    files,
+    transcript: input.transcript,
+    comments: input.comments,
+    ytDlpVersion: input.ytDlpVersion,
+    warnings: input.commentsWarnings,
+  }) as CaptureManifest;
+  await writeFile(join(input.captureDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+  return manifest;
 }
 
 async function moveRawArtifactsToRawDir(captureDir: string, manifest: CaptureManifest) {
@@ -406,7 +713,7 @@ export default function (pi: ExtensionAPI) {
     name: "youtube_chorus_capture",
     label: "YouTube Chorus Capture",
     description:
-      "Capture YouTube metadata, transcript, and comments as raw files using yt-capture, then derive normalized transcript text, transcript JSONL segments, scored comment JSONL, and lexical comment clusters. Returns artifact paths; does not summarize.",
+      "Capture YouTube metadata, transcript, and comments as raw files using native YouTube Data API calls plus yt-dlp subtitles, then derive normalized transcript text, transcript JSONL segments, scored comment JSONL, and lexical comment clusters. Returns artifact paths; does not summarize.",
     promptSnippet: "Capture YouTube transcript and comments as raw reusable context files.",
     promptGuidelines: [
       "Use youtube_chorus_capture when a user asks to analyze a YouTube video including audience comments.",
@@ -419,38 +726,77 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: "Cancelled." }], details: { cancelled: true } };
       }
 
-      const ytMcpDirFromEnv = !params.ytMcpDir && Boolean(process.env.YT_MCP_DIR);
-      const invocation = buildCaptureInvocation({
-        videoUrl: params.videoUrl,
-        cwd: ctx.cwd,
-        outputDir: params.outputDir,
-        maxComments: params.maxComments ?? 5000,
-        maxWords: params.maxWords ?? 80000,
-        ytMcpDir: params.ytMcpDir ?? process.env.YT_MCP_DIR,
-        envFile: params.envFile,
-        configDir: params.configDir,
-      });
+      const videoId = extractVideoId(params.videoUrl);
+      const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+      const captureDir = resolve(ctx.cwd, params.outputDir ?? defaultOutputDir(ctx.cwd, params.videoUrl));
+      const maxComments = params.maxComments ?? 5000;
+      const maxWords = params.maxWords ?? 80000;
+      await mkdir(captureDir, { recursive: true });
 
       onUpdate?.({
-        content: [{ type: "text", text: `Capturing transcript and comments for ${invocation.videoId}...` }],
-        details: { outputDir: invocation.outputDir },
+        content: [{ type: "text", text: `Capturing transcript and comments natively for ${videoId}...` }],
+        details: { outputDir: captureDir, extractor: "native" },
       });
 
-      const result = await pi.exec(invocation.command, invocation.args, { signal, timeout: 10 * 60_000, cwd: ctx.cwd });
-      if (result.code !== 0) {
+      const ytDlpVersion = await preflightYtDlp(pi, ctx.cwd, signal);
+      const apiKey = await loadYouTubeApiKey(ctx.cwd, { envFile: params.envFile, configDir: params.configDir });
+      if (!apiKey.apiKey) {
         throw new Error(
-          `yt-capture failed. Ensure yt-capture is on PATH or set YT_MCP_DIR. ${result.stderr || result.stdout}`
+          [
+            "YOUTUBE_API_KEY is required for native YouTube metadata/comments capture.",
+            "Set it in the Pi process environment or in one of the supported .env files.",
+            apiKey.candidates.length ? `Checked: ${apiKey.candidates.join(", ")}` : undefined,
+          ]
+            .filter(Boolean)
+            .join("\n")
         );
+      }
+
+      // Local abort controller: if any one capture branch rejects (bad API
+      // key, video not found, yt-dlp preflight), abort the surviving branches
+      // so we don't leak yt-dlp subprocesses and YouTube API quota for a
+      // capture that has already failed. Forwards the incoming signal too.
+      const captureController = new AbortController();
+      const onIncomingAbort = () => captureController.abort();
+      if (signal) {
+        if (signal.aborted) captureController.abort();
+        else signal.addEventListener("abort", onIncomingAbort, { once: true });
+      }
+      const captureSignal = captureController.signal;
+      const abortOnError = <T>(p: Promise<T>): Promise<T> =>
+        p.catch((error) => {
+          captureController.abort();
+          throw error;
+        });
+
+      let metadata: VideoMetadata;
+      let transcriptCapture: Awaited<ReturnType<typeof captureTranscriptWithYtDlp>>;
+      let commentsCapture: Awaited<ReturnType<typeof fetchComments>>;
+      try {
+        ([metadata, transcriptCapture, commentsCapture] = await Promise.all([
+          abortOnError(fetchVideoMetadata(videoId, videoUrl, apiKey.apiKey, captureSignal)),
+          abortOnError(captureTranscriptWithYtDlp(pi, videoUrl, captureDir, ctx.cwd, captureSignal)),
+          abortOnError(fetchComments(videoId, apiKey.apiKey, { maxComments, maxWords, signal: captureSignal })),
+        ]));
+      } finally {
+        if (signal) signal.removeEventListener("abort", onIncomingAbort);
       }
 
       if (signal?.aborted) {
         return { content: [{ type: "text", text: "Cancelled." }], details: { cancelled: true } };
       }
 
-      const captureDir = await findCaptureDirectory(ctx.cwd, invocation.outputDir, result.stdout);
+      const manifest = await writeNativeCaptureArtifacts({
+        captureDir,
+        capturedAt: new Date().toISOString(),
+        video: metadata,
+        transcript: transcriptCapture.transcript,
+        rawTranscript: transcriptCapture.rawTranscript,
+        comments: commentsCapture.state,
+        commentsWarnings: [...transcriptCapture.warnings, ...commentsCapture.warnings],
+        ytDlpVersion,
+      });
       const manifestPath = join(captureDir, "manifest.json");
-      const manifest = await readJsonIfExists<CaptureManifest>(manifestPath);
-      if (!manifest) throw new Error(`Capture manifest is missing or unreadable: ${manifestPath}`);
 
       let derived: Awaited<ReturnType<typeof materializeDerivedArtifacts>> | undefined;
       let canonicalLayout: Awaited<ReturnType<typeof moveRawArtifactsToRawDir>> | undefined;
@@ -471,7 +817,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const layoutWarning = params.postProcess === false && (params.artifactLayout ?? "canonical") === "canonical"
-        ? "artifactLayout=canonical requires postProcess=true; leaving raw yt-capture layout intact."
+        ? "artifactLayout=canonical requires postProcess=true; leaving raw native extractor layout intact."
         : undefined;
       const stats = manifest.stats ?? {};
       const derivedFiles = derived?.files ?? manifest.derived?.files ?? {};
@@ -481,8 +827,9 @@ export default function (pi: ExtensionAPI) {
           {
             type: "text",
             text: [
-              `Captured YouTube source data for ${manifest.title ?? invocation.videoId}.`,
+              `Captured YouTube source data for ${manifest.title ?? videoId}.`,
               `Directory: ${captureDir}`,
+              `Extractor: native (yt-dlp ${ytDlpVersion})`,
               `Transcript words: ${stats.normalized_transcript_word_count ?? stats.transcript_word_count ?? "unknown"}`,
               `Transcript segments JSONL: ${derivedFiles.transcript_segments_jsonl ?? manifest.files?.transcript_segments_jsonl ?? "not generated"}`,
               `Comments: ${stats.comment_count ?? "unknown"}`,
@@ -501,12 +848,12 @@ export default function (pi: ExtensionAPI) {
           derived,
           canonicalLayout,
           layoutWarning,
-          invocation: { command: invocation.command, args: invocation.args, outputDir: invocation.outputDir },
+          invocation: { command: "yt-dlp", outputDir: captureDir, extractor: "native" },
           environment: {
-            ytMcpDirSource: params.ytMcpDir ? "param" : ytMcpDirFromEnv ? "YT_MCP_DIR" : "PATH",
+            apiKeySource: apiKey.source === "process.env" ? "process.env" : apiKey.source ? "env-file" : "missing",
             envFileProvided: Boolean(params.envFile),
             configDirProvided: Boolean(params.configDir),
-            note: "pi-youtube-chorus does not read or print API keys; yt-capture inherits the Pi process environment and receives --env-file/--config-dir when provided.",
+            note: "pi-youtube-chorus reads YOUTUBE_API_KEY without printing key material; yt-dlp is invoked directly for transcript subtitles.",
           },
         },
       };
@@ -613,9 +960,5 @@ export default function (pi: ExtensionAPI) {
         ].join("\n")
       );
     },
-  });
-
-  pi.on("session_start", async (_event, ctx) => {
-    if (ctx.hasUI) ctx.ui.setStatus("yt-chorus", "YouTube Chorus");
   });
 }

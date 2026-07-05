@@ -10,8 +10,8 @@ Existing Pi YouTube packages mostly cover transcripts, summaries, search, frames
 
 ## Design principles
 
-- **Minimal footprint**: native Pi extension, no daemon.
-- **Reuse existing extractor**: shells out to the existing `yt-capture` CLI from `yt-mcp`.
+- **Minimal footprint**: native Pi extension, no daemon, no Python wrapper.
+- **Lean extraction stack**: transcript subtitles come from the `yt-dlp` binary; metadata/comments come from YouTube Data API v3.
 - **Data first**: transcript and comments are stored as files before any synthesis.
 - **Context safe**: model-facing output is bounded and points to full artifacts when truncated.
 - **Separation of concerns**: extension retrieves data; skill/prompt guides synthesis.
@@ -20,7 +20,7 @@ Existing Pi YouTube packages mostly cover transcripts, summaries, search, frames
 
 ### `youtube_chorus_capture`
 
-Calls `yt-capture` and writes the raw capture first:
+Uses native fetch calls plus `yt-dlp` subtitles and writes the raw capture first:
 
 - `metadata.json`
 - `transcript.json`
@@ -38,7 +38,7 @@ Then, by default, it post-processes those raw files into model-ready canonical a
 - `comments.clusters.json` — lightweight lexical comment clusters for recurring audience themes
 - `transcript.normalized.txt` — readable transcript view, including YouTube timedtext JSON normalization
 
-With the default `artifactLayout: "canonical"`, extractor-only raw files are moved under `raw/`, while model-facing sources stay at the capture root. Canonical layout requires `postProcess: true`; if post-processing is disabled, the extension leaves the raw `yt-capture` layout intact and reports a warning.
+With the default `artifactLayout: "canonical"`, extractor-only raw files are moved under `raw/`, while model-facing sources stay at the capture root. Canonical layout requires `postProcess: true`; if post-processing is disabled, the extension leaves the raw native extractor layout intact and reports a warning.
 
 Parameters:
 
@@ -46,23 +46,24 @@ Parameters:
 - `maxComments` — default `5000`
 - `maxWords` — default `80000`
 - `outputDir` — optional; defaults to `.pi/youtube-chorus/<timestamp>-<videoId>`
-- `ytMcpDir` — optional path to the `yt-mcp` repo
-- `envFile`, `configDir` — forwarded to `yt-capture`
+- `envFile`, `configDir` — optional `.env` locations for `YOUTUBE_API_KEY`
 - `postProcess` — default `true`; creates normalized transcript/comment signal artifacts
 - `artifactLayout` — `canonical` or `legacy`; default `canonical`
 
-If `ytMcpDir` is absent, the tool expects `yt-capture` on `PATH`. You can also set:
+Requirements:
 
 ```bash
-export YT_MCP_DIR=/Users/zbigniewsiwiec/code/sandbox/yt-mcp
+brew install yt-dlp
+export YOUTUBE_API_KEY=...
 ```
+
+The API key is used for `videos.list` metadata (1 quota unit) and `commentThreads.list` pagination (about 1 unit per 100 comments, so a 5000-comment capture is roughly 51 units total). `yt-dlp` is used directly for subtitles and its version is recorded in `manifest.json`.
 
 Environment/API key behavior:
 
-- `pi-youtube-chorus` does not read, store, or print API keys directly.
-- `yt-capture` inherits the Pi process environment.
-- If `envFile` is passed, the extension forwards it as `--env-file` to `yt-capture`.
-- If `configDir` is passed, the extension forwards it as `--config-dir` to `yt-capture`.
+- `pi-youtube-chorus` reads `YOUTUBE_API_KEY` from `process.env` first.
+- If needed, it checks `.env` candidates in this order: explicit `envFile`, `configDir/.env`, `cwd/.env`, `~/.config/pi-youtube-chorus/.env`, then legacy `~/.config/yt-mcp/.env`.
+- It never prints key material in tool output or details.
 - Pi model/provider API keys are not used during capture; synthesis is performed by the active Pi model after context is loaded.
 
 ### `youtube_chorus_context`

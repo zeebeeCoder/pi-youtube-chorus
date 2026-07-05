@@ -1,25 +1,4 @@
-import { join, resolve } from "node:path";
-
-export interface CaptureInvocationOptions {
-  videoUrl: string;
-  cwd: string;
-  outputDir?: string;
-  maxComments?: number;
-  maxWords?: number;
-  ytMcpDir?: string;
-  envFile?: string;
-  configDir?: string;
-  skipTranscript?: boolean;
-  skipComments?: boolean;
-  now?: Date;
-}
-
-export interface CommandInvocation {
-  command: string;
-  args: string[];
-  outputDir: string;
-  videoId: string;
-}
+import { join } from "node:path";
 
 export interface TruncatedText {
   text: string;
@@ -143,53 +122,6 @@ export function safeTimestamp(date: Date = new Date()): string {
 export function defaultOutputDir(cwd: string, videoUrl: string, now: Date = new Date()): string {
   const videoId = extractVideoId(videoUrl);
   return join(cwd, ".pi", "youtube-chorus", `${safeTimestamp(now)}-${videoId}`);
-}
-
-export function buildCaptureInvocation(options: CaptureInvocationOptions): CommandInvocation {
-  const videoId = extractVideoId(options.videoUrl);
-  const outputDir = resolve(
-    options.cwd,
-    options.outputDir ?? defaultOutputDir(options.cwd, options.videoUrl, options.now)
-  );
-
-  const captureArgs = [options.videoUrl, "--output-dir", outputDir];
-
-  if (options.maxComments !== undefined) captureArgs.push("--max-comments", String(options.maxComments));
-  if (options.maxWords !== undefined) captureArgs.push("--max-words", String(options.maxWords));
-  if (options.envFile) captureArgs.push("--env-file", options.envFile);
-  if (options.configDir) captureArgs.push("--config-dir", options.configDir);
-  if (options.skipTranscript) captureArgs.push("--no-transcript");
-  if (options.skipComments) captureArgs.push("--no-comments");
-
-  if (options.ytMcpDir) {
-    return {
-      command: "uv",
-      args: ["run", "--project", options.ytMcpDir, "yt-capture", ...captureArgs],
-      outputDir,
-      videoId,
-    };
-  }
-
-  return {
-    command: "yt-capture",
-    args: captureArgs,
-    outputDir,
-    videoId,
-  };
-}
-
-export function captureDirectoryCandidates(stdout: string): string[] {
-  const lines = stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  const candidates: string[] = [];
-
-  for (const line of [...lines].reverse()) {
-    const labelled = line.match(/(?:capture\s+directory|directory|output\s+dir|output)\s*[:=]\s*(.+)$/i)?.[1];
-    const barePath = labelled ?? line;
-    const pathMatch = barePath.match(/((?:\.|~|\/)?[^\s]*youtube-chorus[^\s]*|(?:\.|\/)[^\s]+|[0-9T:-]+Z-[0-9A-Za-z_-]{11})/);
-    if (pathMatch?.[1]) candidates.push(pathMatch[1].replace(/^['"]|['"]$/g, ""));
-  }
-
-  return [...new Set(candidates)];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
